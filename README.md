@@ -48,7 +48,7 @@ Make sure you have needed dependencies installed:
 
 - [libcurl](https://curl.se/libcurl/)
 - [libuv](https://libuv.org)
-- [Meson](https://mesonbuild.com) or [CMake](https://cmake.org) 3.16+
+- [CMake](https://cmake.org) 3.16+
 - C++17 compiler
 
 (You can also install dependencies and build the project using
@@ -59,14 +59,6 @@ Clone the repository:
 ```bash
 git clone https://github.com/ccache/ccache-storage-http-cpp
 cd ccache-storage-http-cpp
-```
-
-To build and install with **Meson**:
-
-```bash
-meson setup --buildtype release build
-meson compile -C build
-meson install -C build
 ```
 
 To build and install with **CMake**:
