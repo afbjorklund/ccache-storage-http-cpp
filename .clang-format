@@ -29,7 +29,7 @@ IncludeCategories:
   - Regex: '^"'
     Priority: 1
   # Dependency headers:
-  - Regex: '^<(uv\.h|curl/curl\.h)>$'
+  - Regex: '^<(uv\.h|hiredis/.*\.h)>$'
     Priority: 3
   # System headers:
   - Regex: '\.h.*>$'

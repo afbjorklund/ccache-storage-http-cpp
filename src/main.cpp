@@ -19,10 +19,10 @@
 #include <iostream>
 
 static constexpr auto USAGE =
-  "This is a ccache HTTP(S) storage helper, usually started automatically by ccache\n"
+  "This is a ccache Redis(s) storage helper, usually started automatically by ccache\n"
   "when needed. More information here: https://ccache.dev/storage-helpers.html\n"
   "\n"
-  "Project: https://github.com/ccache/ccache-storage-http-cpp\n"
+  "Project: https://github.com/ccache/ccache-storage-redis-cpp\n"
   "Version: " PROJECT_VERSION "\n";
 
 int main()

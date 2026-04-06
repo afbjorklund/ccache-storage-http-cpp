@@ -18,7 +18,7 @@ jobs:
     - name: Create source archives
       run: |
         VERSION="${GITHUB_REF_NAME#v}"
-        ARCHIVE_NAME="ccache-storage-http-cpp-${VERSION}"
+        ARCHIVE_NAME="ccache-storage-redis-cpp-${VERSION}"
         git archive --format=tar --prefix="${ARCHIVE_NAME}/" HEAD | gzip -9 > "${ARCHIVE_NAME}.tar.gz"
         git archive --format=tar --prefix="${ARCHIVE_NAME}/" HEAD | xz -9 > "${ARCHIVE_NAME}.tar.xz"
         git archive --format=zip --prefix="${ARCHIVE_NAME}/" HEAD > "${ARCHIVE_NAME}.zip"

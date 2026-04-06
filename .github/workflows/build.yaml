@@ -14,7 +14,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libcurl4-openssl-dev libuv1-dev cmake build-essential
+        sudo apt-get install -y libhiredis-dev libuv1-dev cmake build-essential
 
     - name: Configure
       run: cmake -B build -D CMAKE_BUILD_TYPE=Release
@@ -27,5 +27,5 @@ jobs:
 
     - name: Verify installation
       run: |
-        test -f /usr/local/bin/ccache-storage-http
-        test -L /usr/local/bin/ccache-storage-https
+        test -f /usr/local/bin/ccache-storage-redis
+        test -L /usr/local/bin/ccache-storage-rediss

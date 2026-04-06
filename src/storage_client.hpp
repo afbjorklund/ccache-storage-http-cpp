@@ -5,7 +5,12 @@
 
 #include "config.hpp"
 
-#include <curl/curl.h>
+#include <hiredis/async.h>
+#include <hiredis/hiredis.h>
+#ifdef HAVE_HIREDIS_SSL
+#  include <hiredis/hiredis_ssl.h>
+#endif
+#include <hiredis/adapters/libuv.h>
 #include <uv.h>
 
 #include <cstdint>
@@ -26,27 +31,25 @@ struct StorageResponse
 
 using StorageCallback = std::function<void(StorageResponse&&)>;
 
-#undef DELETE // needed on Windows
-enum class HttpOperation { GET, PUT, DELETE, HEAD };
+enum class RedisOperation { GET, SET, DEL, EXISTS };
 
-struct HttpRequest
+struct RedisCommand
 {
-  HttpOperation operation;
+  RedisOperation operation;
   std::string url;
-  std::vector<uint8_t> request_data; // For PUT
-  std::vector<uint8_t> response_data;
+  long long response_int;
+  std::string response_str;
   StorageCallback callback;
-  struct curl_slist* headers = nullptr;
-  char error_buf[CURL_ERROR_SIZE] = {0};
-  size_t upload_pos = 0;
+  int error;
+  char error_buf[128] = {0};
 };
 
 class StorageClient;
 
-struct CurlSocketContext
+struct RedisCommandContext
 {
-  uv_poll_t poll_handle;
-  curl_socket_t sockfd;
+  uv_work_t req_handle;
+  RedisCommand* command;
   StorageClient* client;
 };
 
@@ -58,6 +61,8 @@ public:
 
   bool init();
 
+  void connect();
+
   void get(const std::string& hex_key, StorageCallback&& callback);
   void put(const std::string& hex_key,
            std::vector<uint8_t>&& data,
@@ -67,25 +72,24 @@ public:
 
 private:
   void do_put(const std::string& hex_key, std::vector<uint8_t>&& data, StorageCallback&& callback);
-  void check_multi_info();
+  void command_completed(RedisCommandContext* context);
 
-  CURL* create_easy_handle(HttpRequest* request);
-  CurlSocketContext* create_socket_context(curl_socket_t sockfd);
-  void destroy_socket_context(CurlSocketContext* ctx);
+  uv_work_t* create_command_context(RedisCommand* command, const char* format, ...);
 
-  // Static callbacks for curl:
-  static int socket_callback(CURL* handle, curl_socket_t s, int action, void* userp, void* socketp);
-  static int timer_callback(CURLM* multi, long timeout_ms, void* userp);
-  static size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata);
-  static size_t read_callback(char* ptr, size_t size, size_t nmemb, void* userdata);
+  // Static callbacks for hiredis:
+  static void connect_callback(const redisAsyncContext* c, int status);
+  static void command_callback(redisAsyncContext* c, void* reply, void* privdata);
 
   // Static callbacks for libuv:
-  static void on_timeout(uv_timer_t* handle);
-  static void on_poll(uv_poll_t* handle, int status, int events);
+  static void command_session(uv_work_t* req);
+  static void command_cleanup(uv_work_t* req, int status);
 
   uv_loop_t& _loop;
   const Config& _config;
-  CURLM* _multi_handle = nullptr;
+  redisAsyncContext* _context = nullptr;
+#ifdef HAVE_HIREDIS_SSL
+  redisSSLContext* _ssl_context = nullptr;
+#endif
   uv_timer_t _timeout_timer;
-  std::unordered_map<CURL*, std::unique_ptr<HttpRequest>> _active_requests;
+  std::unordered_map<uv_work_t*, std::unique_ptr<RedisCommand>> _active_commands;
 };

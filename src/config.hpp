@@ -17,6 +17,13 @@ struct Config
 {
   std::string ipc_endpoint;
   std::string url;
+  std::string scheme;
+  std::string user;
+  std::string pass;
+  std::string host;
+  std::string port;
+  std::string path;
+  std::string prefix;
   unsigned int idle_timeout_seconds = 0;
 
   // Attributes from CRSH_ATTR_*

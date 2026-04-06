@@ -40,7 +40,49 @@ std::optional<Config> parse_config()
     LOG("CRSH_URL not set");
     return std::nullopt;
   }
+
+  // parse url
+  std::string uri = url;
+  std::size_t start = uri.find(":", 0);
+  if (start == std::string::npos) {
+    return std::nullopt;
+  }
+  std::string scheme = uri.substr(0, start);
+  start += 1;
+  std::string path;
+  if (scheme == "redis+unix") {
+    if (uri[start] == '/' && uri[start+1] == '/') {
+      start += 2;
+    }
+  } else {
+    start += 2;
+  }
+  std::string user;
+  std::string pass;
+  std::size_t end = uri.find("@", start);
+  if (end != std::string::npos) {
+    pass = uri.substr(start, end - start);
+    start += pass.size() + 1;
+  }
+  end = uri.find(":", start);
+  std::string host = uri.substr(start, end - start);
+  std::string port = uri.substr(end + 1);
+  if (end == std::string::npos) {
+    port = "";
+  }
+  start = uri.find("/", start);
+  if (start != std::string::npos) {
+    path = uri.substr(start);
+  }
+
   config.url = url;
+  config.scheme = scheme;
+  config.user = user;
+  config.pass = pass;
+  config.host = host;
+  config.port = port;
+  config.path = path;
+  config.prefix = "ccache";
 
   const char* idle_timeout = std::getenv("CRSH_IDLE_TIMEOUT");
   if (!idle_timeout || idle_timeout[0] == '\0') {
