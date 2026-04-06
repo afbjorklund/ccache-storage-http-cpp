@@ -51,9 +51,6 @@ Make sure you have needed dependencies installed:
 - [CMake](https://cmake.org) 3.16+
 - C++17 compiler
 
-(You can also install dependencies and build the project using
-[Conan](https://docs.conan.io/2/).)
-
 Clone the repository:
 
 ```bash
