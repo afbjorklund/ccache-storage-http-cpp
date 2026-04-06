@@ -13,12 +13,6 @@
 #  include <sys/types.h>
 #endif
 
-enum class UrlLayout {
-  BAZEL,   // ac/ + 64 hex digits
-  FLAT,    // key directly appended
-  SUBDIRS, // first 2 chars / rest of key
-};
-
 struct Config
 {
   std::string ipc_endpoint;
@@ -27,7 +21,6 @@ struct Config
 
   // Attributes from CRSH_ATTR_*
   std::optional<std::string> bearer_token;
-  UrlLayout layout = UrlLayout::SUBDIRS;
   std::vector<std::pair<std::string, std::string>> headers;
 };
 

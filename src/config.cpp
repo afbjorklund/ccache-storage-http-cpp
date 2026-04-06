@@ -20,17 +20,6 @@ template<typename T> std::optional<T> parse_int(std::string_view str, int base =
   return std::nullopt;
 }
 
-static UrlLayout parse_layout(const std::string& str)
-{
-  if (str == "bazel") {
-    return UrlLayout::BAZEL;
-  } else if (str == "flat") {
-    return UrlLayout::FLAT;
-  } else {
-    return UrlLayout::SUBDIRS; // Default
-  }
-}
-
 std::optional<Config> parse_config()
 {
   Config config;
@@ -95,8 +84,6 @@ std::optional<Config> parse_config()
 
     if (key_str == "bearer-token") {
       config.bearer_token = value_str;
-    } else if (key_str == "layout") {
-      config.layout = parse_layout(value_str);
     } else if (key_str == "header") {
       size_t eq_pos = value_str.find('=');
       if (eq_pos != std::string::npos) {

@@ -22,32 +22,7 @@ static std::string build_url(const Config& config, const std::string& hex_key)
   std::ostringstream url;
   url << base_url;
 
-  switch (config.layout) {
-  case UrlLayout::BAZEL: {
-    // Bazel format: ac/ + 64 hex digits, so pad shorter keys by repeating the key prefix to reach
-    // the expected SHA256 size.
-    constexpr size_t sha256_hex_size = 64;
-    url << "ac/";
-    if (hex_key.size() >= sha256_hex_size) {
-      url << hex_key.substr(0, sha256_hex_size);
-    } else {
-      url << hex_key << hex_key.substr(0, sha256_hex_size - hex_key.size());
-    }
-    break;
-  }
-
-  case UrlLayout::FLAT:
-    url << hex_key;
-    break;
-
-  case UrlLayout::SUBDIRS:
-    if (hex_key.size() >= 2) {
-      url << hex_key.substr(0, 2) << "/" << hex_key.substr(2);
-    } else {
-      url << hex_key;
-    }
-    break;
-  }
+  url << hex_key;
 
   return url.str();
 }

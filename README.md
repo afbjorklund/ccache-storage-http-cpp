@@ -25,7 +25,6 @@ This project aims to:
 - High-performance concurrent request handling
 - HTTP keep-alive for efficient connection reuse
 - Cross-platform: Linux, macOS, Windows
-- Multiple layout modes: `flat`, `subdirs`, `bazel`
 - Bearer token authentication support
 - Support for custom HTTP headers
 - Optional debug logging
@@ -94,10 +93,6 @@ The helper supports the following custom attributes:
 
 - `@bearer-token`: Bearer token for `Authorization` header
 - `@header`: Custom HTTP headers (can be specified multiple times)
-- `@layout`: Storage layout mode
-  - `subdirs` (default): First 2 hex chars as subdirectory
-  - `flat`: All files in root directory
-  - `bazel`: Bazel Remote Execution API compatible layout
 
 Example:
 
