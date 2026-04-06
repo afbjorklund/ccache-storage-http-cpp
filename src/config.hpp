@@ -21,7 +21,6 @@ struct Config
 
   // Attributes from CRSH_ATTR_*
   std::optional<std::string> bearer_token;
-  std::vector<std::pair<std::string, std::string>> headers;
 };
 
 std::optional<Config> parse_config();

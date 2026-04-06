@@ -211,11 +211,6 @@ CURL* StorageClient::create_easy_handle(HttpRequest* request)
     headers = curl_slist_append(headers, auth_header.c_str());
   }
 
-  for (const auto& header : _config.headers) {
-    std::string header_line = header.first + ": " + header.second;
-    headers = curl_slist_append(headers, header_line.c_str());
-  }
-
   if (headers) {
     curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
     request->headers = headers;
