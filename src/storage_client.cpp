@@ -6,8 +6,11 @@
 #include "logger.hpp"
 #include "version.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <limits>
 #include <sstream>
+#include <thread>
 
 namespace {
 
@@ -65,12 +68,13 @@ bool StorageClient::init()
     return false;
   }
 
+  long connection_pool_size = std::max<long>(32, std::thread::hardware_concurrency());
   curl_multi_setopt(_multi_handle, CURLMOPT_SOCKETFUNCTION, socket_callback);
   curl_multi_setopt(_multi_handle, CURLMOPT_SOCKETDATA, this);
   curl_multi_setopt(_multi_handle, CURLMOPT_TIMERFUNCTION, timer_callback);
   curl_multi_setopt(_multi_handle, CURLMOPT_TIMERDATA, this);
-  curl_multi_setopt(_multi_handle, CURLMOPT_MAX_HOST_CONNECTIONS, 16L);
-  curl_multi_setopt(_multi_handle, CURLMOPT_MAXCONNECTS, 16L);
+  curl_multi_setopt(_multi_handle, CURLMOPT_MAX_HOST_CONNECTIONS, connection_pool_size);
+  curl_multi_setopt(_multi_handle, CURLMOPT_MAXCONNECTS, connection_pool_size);
 
   uv_timer_init(&_loop, &_timeout_timer);
   _timeout_timer.data = this;
@@ -99,11 +103,11 @@ void StorageClient::get(const std::string& hex_key, StorageCallback&& callback)
 }
 
 void StorageClient::put(const std::string& hex_key,
-                        std::vector<uint8_t>&& data,
+                        DataSlice&& data,
                         bool overwrite,
                         StorageCallback&& callback)
 {
-  LOG("PUT " + hex_key + " (" + std::to_string(data.size())
+  LOG("PUT " + hex_key + " (" + std::to_string(data.size)
       + " bytes, overwrite=" + (overwrite ? "true" : "false") + ")");
 
   if (overwrite) {
@@ -139,11 +143,8 @@ void StorageClient::put(const std::string& hex_key,
   }
 }
 
-void StorageClient::do_put(const std::string& hex_key,
-                           std::vector<uint8_t>&& data,
-                           StorageCallback&& callback)
+void StorageClient::do_put(const std::string& hex_key, DataSlice&& data, StorageCallback&& callback)
 {
-  size_t data_size = data.size();
   auto request = std::make_unique<HttpRequest>();
   request->operation = HttpOperation::PUT;
   request->url = build_url(_config, hex_key);
@@ -156,8 +157,9 @@ void StorageClient::do_put(const std::string& hex_key,
     return;
   }
 
+  auto filesize = static_cast<curl_off_t>(request->request_data.size);
   curl_easy_setopt(handle, CURLOPT_UPLOAD, 1L);
-  curl_easy_setopt(handle, CURLOPT_INFILESIZE_LARGE, static_cast<curl_off_t>(data_size));
+  curl_easy_setopt(handle, CURLOPT_INFILESIZE_LARGE, filesize);
   curl_easy_setopt(handle, CURLOPT_READFUNCTION, read_callback);
   curl_easy_setopt(handle, CURLOPT_READDATA, request.get());
   _active_requests[handle] = std::move(request);
@@ -190,6 +192,8 @@ CURL* StorageClient::create_easy_handle(HttpRequest* request)
   if (!handle) {
     return nullptr;
   }
+
+  request->easy_handle = handle;
 
   curl_easy_setopt(handle, CURLOPT_ERRORBUFFER, request->error_buf);
   curl_easy_setopt(handle, CURLOPT_EXPECT_100_TIMEOUT_MS, 0L);
@@ -417,6 +421,17 @@ void StorageClient::on_poll(uv_poll_t* handle, int status, int events)
 size_t StorageClient::write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
   HttpRequest* request = static_cast<HttpRequest*>(userdata);
+
+  if (request->response_data.capacity() == 0 && request->operation == HttpOperation::GET) {
+    curl_off_t content_length = -1;
+    CURLcode result =
+      curl_easy_getinfo(request->easy_handle, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &content_length);
+    if (result == CURLE_OK && content_length > 0
+        && static_cast<uint64_t>(content_length) <= std::numeric_limits<size_t>::max()) {
+      request->response_data.reserve(static_cast<size_t>(content_length));
+    }
+  }
+
   size_t total = size * nmemb;
   request->response_data.insert(request->response_data.end(), ptr, ptr + total);
   return total;
@@ -427,11 +442,13 @@ size_t StorageClient::read_callback(char* ptr, size_t size, size_t nmemb, void* 
   HttpRequest* request = static_cast<HttpRequest*>(userdata);
 
   size_t max_bytes = size * nmemb;
-  const std::vector<uint8_t>& data = request->request_data;
-  size_t remaining = (request->upload_pos < data.size()) ? (data.size() - request->upload_pos) : 0;
+  size_t data_offset = request->request_data.offset;
+  const auto data = request->request_data.storage.data() + data_offset;
+  size_t data_size = request->request_data.size;
+  size_t remaining = (request->upload_pos < data_size) ? (data_size - request->upload_pos) : 0;
   size_t to_copy = std::min(remaining, max_bytes);
   if (to_copy > 0) {
-    std::memcpy(ptr, data.data() + request->upload_pos, to_copy);
+    std::memcpy(ptr, data + request->upload_pos, to_copy);
     request->upload_pos += to_copy;
   }
 

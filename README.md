@@ -27,6 +27,7 @@ This project aims to:
 - Cross-platform: Linux, macOS, Windows
 - Bearer token authentication support
 - Optional debug logging
+- [netrc](https://everything.curl.dev/usingcurl/netrc.html) support
 
 ## Installation
 

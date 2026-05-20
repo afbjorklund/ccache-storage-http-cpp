@@ -4,15 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7] - 2026-05-10
+
+### Added
+
+- Basic integration test suite.
+
+### Changed
+
+- Improve connection pool size.
+- Avoid an extra copy of PUT payloads.
+- Preallocate response buffer for GET requests.
+- Increase uv_listen backlog to 4096.
+
 ## [0.6] - 2026-04-22
 
 ### Added
 
-- Support for [netrc](https://everything.curl.dev/usingcurl/netrc.html)
-  authentication.
+- Support for [netrc] authentication.
 - Logging of attributes.
 - Support for CRSH greeting message format 2.
 - Sending of config errors/warnings to ccache.
+
+[netrc]: https://everything.curl.dev/usingcurl/netrc.html
 
 ### Changed
 
