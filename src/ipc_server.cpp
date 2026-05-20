@@ -4,6 +4,7 @@
 #include "ipc_server.hpp"
 
 #include "logger.hpp"
+#include "version.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -18,7 +19,9 @@
 namespace {
 
 constexpr uint8_t PROTOCOL_VERSION = 0x01;
-constexpr uint8_t CAP_GET_PUT_REMOVE_STOP = 0x00;
+constexpr uint8_t CAP_GET_PUT_REMOVE = 0x00;
+constexpr uint8_t CAP_INFO = 0x01;
+constexpr uint8_t CAP_EXISTS = 0x02;
 
 constexpr uint8_t STATUS_OK = 0x00;
 constexpr uint8_t STATUS_NOOP = 0x01;
@@ -28,6 +31,8 @@ constexpr uint8_t REQ_GET = 0x00;
 constexpr uint8_t REQ_PUT = 0x01;
 constexpr uint8_t REQ_REMOVE = 0x02;
 constexpr uint8_t REQ_STOP = 0x03;
+constexpr uint8_t REQ_INFO = 0x04;
+constexpr uint8_t REQ_EXISTS = 0x05;
 
 constexpr uint8_t PUT_FLAG_OVERWRITE = 0x01;
 constexpr size_t MAX_MSG_LEN = 255;
@@ -88,7 +93,7 @@ bool IpcServer::init()
     return false;
   }
 
-  r = uv_listen(reinterpret_cast<uv_stream_t*>(&_server_pipe), 128, on_new_connection);
+  r = uv_listen(reinterpret_cast<uv_stream_t*>(&_server_pipe), 4096, on_new_connection);
   if (r != 0) {
     LOG("Failed to listen on IPC endpoint: " + std::string(uv_strerror(r)));
     return false;
@@ -139,7 +144,7 @@ void IpcServer::on_new_connection(uv_stream_t* server_stream, int status)
   IpcServer* server = static_cast<IpcServer*>(server_stream->data);
   server->reset_idle_timer();
 
-  auto client = std::make_unique<ClientConnection>();
+  auto client = std::make_shared<ClientConnection>();
   client->server = server;
 
   int r = uv_pipe_init(&server->_loop, &client->handle, 0);
@@ -149,27 +154,27 @@ void IpcServer::on_new_connection(uv_stream_t* server_stream, int status)
   }
   client->handle.data = client.get();
 
+  // Track client before any uv_close call so on_close always finds a valid shared_ptr
+  server->_clients[&client->handle] = client;
+
   r = uv_accept(server_stream, reinterpret_cast<uv_stream_t*>(&client->handle));
   if (r != 0) {
     LOG("Failed to accept connection: " + std::string(uv_strerror(r)));
-    uv_close(reinterpret_cast<uv_handle_t*>(&client->handle), on_close);
-    client.release(); // Will be deleted in on_close
+    close_client(*client);
     return;
   }
 
   LOG("Client connected");
 
   // Send greeting: version(u8) + num_capabilities(u8) + capabilities...
-  std::vector<uint8_t> greeting = {PROTOCOL_VERSION, 1, CAP_GET_PUT_REMOVE_STOP};
+  std::vector<uint8_t> greeting = {PROTOCOL_VERSION, 3, CAP_GET_PUT_REMOVE, CAP_INFO, CAP_EXISTS};
   server->send_response(*client, std::move(greeting));
 
   r = uv_read_start(reinterpret_cast<uv_stream_t*>(&client->handle), alloc_buffer, on_client_read);
   if (r != 0) {
     LOG("Failed to start reading: " + std::string(uv_strerror(r)));
-    uv_close(reinterpret_cast<uv_handle_t*>(&client->handle), on_close);
+    close_client(*client);
   }
-
-  client.release(); // Ownership transferred to libuv callbacks
 }
 
 void IpcServer::alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf)
@@ -192,7 +197,7 @@ void IpcServer::on_client_read(uv_stream_t* stream, ssize_t nread, const uv_buf_
     if (nread != UV_EOF) {
       LOG("Read error: " + std::string(uv_strerror(static_cast<int>(nread))));
     }
-    uv_close(reinterpret_cast<uv_handle_t*>(stream), on_close);
+    close_client(*static_cast<ClientConnection*>(stream->data));
   }
 }
 
@@ -205,49 +210,96 @@ void IpcServer::process_client_data(ClientConnection& client)
     size_t len = buf.size();
     uint8_t request_type = data[0];
     size_t offset = 1;
+    std::string hex_key;
 
-    if (request_type == REQ_STOP) {
-      buf.erase(buf.begin(), buf.begin() + offset);
-      LOG("STOP request received");
-      send_response(client, std::vector<uint8_t>{STATUS_OK});
-      stop();
-      return;
-    }
-
-    if (request_type != REQ_GET && request_type != REQ_PUT && request_type != REQ_REMOVE) {
-      LOG("Unknown request type: " + std::to_string(request_type));
-      stop();
-      return;
-    }
-
-    if (len < offset + 1) {
-      return; // incomplete message
-    }
-    uint8_t key_len = data[offset++];
-    if (len < offset + key_len) {
-      return; // incomplete message
-    }
-    std::string hex_key = format_hex(data + offset, key_len);
-    offset += key_len;
+    auto parse_key = [&] {
+      if (len < offset + 1) {
+        return false; // incomplete message
+      }
+      uint8_t key_len = data[offset++];
+      if (len < offset + key_len) {
+        return false; // incomplete message
+      }
+      hex_key = format_hex(data + offset, key_len);
+      offset += key_len;
+      return true;
+    };
 
     switch (request_type) {
-    case REQ_GET:
+    case REQ_EXISTS: {
+      if (!parse_key()) {
+        return;
+      }
+      LOG("EXISTS request for key " + hex_key);
+      auto client_ptr = client.shared_from_this();
+      _storage_client.exists(hex_key, [this, client_ptr](StorageResponse&& response) {
+        if (client_ptr->disconnected) {
+          return;
+        }
+        if (response.result == StorageResult::ERROR) {
+          LOG("EXISTS failed: " + response.error);
+          std::vector<uint8_t> err_resp;
+          err_resp.push_back(STATUS_ERR);
+          uint8_t msg_len = static_cast<uint8_t>(std::min(response.error.size(), MAX_MSG_LEN));
+          err_resp.push_back(msg_len);
+          err_resp.insert(err_resp.end(), response.error.begin(), response.error.begin() + msg_len);
+          send_response(*client_ptr, std::move(err_resp));
+        } else {
+          uint8_t exists = (response.result == StorageResult::OK) ? 0x01 : 0x00;
+          send_response(*client_ptr, std::vector<uint8_t>{STATUS_OK, exists});
+        }
+      });
+      break;
+    }
+
+    case REQ_INFO: {
+      LOG("INFO request");
+      std::vector<uint8_t> response;
+      std::string identity = std::string("ccache-storage-http-cpp ") + PROJECT_VERSION;
+      uint8_t id_len = static_cast<uint8_t>(std::min(identity.size(), MAX_MSG_LEN));
+      response.push_back(id_len);
+      response.insert(response.end(), identity.begin(), identity.begin() + id_len);
+      const auto& diags = _config.diagnostics;
+      uint8_t diag_num = static_cast<uint8_t>(std::min(diags.size(), size_t{255}));
+      response.push_back(diag_num);
+      for (uint8_t i = 0; i < diag_num; ++i) {
+        uint8_t msg_len = static_cast<uint8_t>(std::min(diags[i].size(), MAX_MSG_LEN));
+        response.push_back(msg_len);
+        response.insert(response.end(), diags[i].begin(), diags[i].begin() + msg_len);
+      }
+
+      send_response(*client.shared_from_this(), std::move(response));
+      break;
+    }
+
+    case REQ_GET: {
+      if (!parse_key()) {
+        return;
+      }
       LOG("GET request for key " + hex_key);
-      _storage_client.get(hex_key, [&](StorageResponse&& response) {
+      auto client_ptr = client.shared_from_this();
+      _storage_client.get(hex_key, [this, client_ptr](StorageResponse&& response) {
+        if (client_ptr->disconnected) {
+          return;
+        }
         if (response.result == StorageResult::OK) {
           std::vector<uint8_t> header;
           header.reserve(9);
           header.push_back(STATUS_OK);
           write_u64_host_byte_order(header, response.data.size());
-          send_response(client, std::move(header));
-          send_response(client, std::move(response.data));
+          send_response(*client_ptr, std::move(header));
+          send_response(*client_ptr, std::move(response.data));
         } else {
-          send_simple_response(client, "GET", response);
+          send_simple_response(*client_ptr, "GET", response);
         }
       });
       break;
+    }
 
     case REQ_PUT: {
+      if (!parse_key()) {
+        return;
+      }
       if (len < offset + 1) {
         return; // incomplete message
       }
@@ -262,23 +314,59 @@ void IpcServer::process_client_data(ClientConnection& client)
         return; // incomplete message
       }
 
-      std::vector<uint8_t> value(data + offset, data + offset + value_len);
-      offset += value_len;
-      bool overwrite = (flags & PUT_FLAG_OVERWRITE) != 0;
-      LOG("PUT request for key " + hex_key + " (" + std::to_string(value.size()) + " bytes)");
+      // buf now contains the header and the full value, and might (in theory
+      // but not in practice) also include excess bytes written by the client.
+      // To avoid copying the potentially large payload, hand over the full
+      // buffer to the storage client.
+      size_t excess_bytes = len - offset - value_len;
+      DataSlice put_data;
+      buf.swap(put_data.storage);
+      put_data.offset = offset;
+      put_data.size = value_len;
+      buf.insert(buf.begin(),
+                 data + offset + value_len,
+                 data + offset + value_len + excess_bytes); // retain excess bytes
 
-      _storage_client.put(hex_key, std::move(value), overwrite, [&](StorageResponse&& response) {
-        send_simple_response(client, "PUT", response);
+      bool overwrite = (flags & PUT_FLAG_OVERWRITE) != 0;
+      LOG("PUT request for key " + hex_key + " (" + std::to_string(value_len) + " bytes)");
+
+      auto client_ptr = client.shared_from_this();
+      _storage_client.put(
+        hex_key, std::move(put_data), overwrite, [this, client_ptr](StorageResponse&& response) {
+          if (client_ptr->disconnected) {
+            return;
+          }
+          send_simple_response(*client_ptr, "PUT", response);
+        });
+      offset = 0; // we have adjusted buf ourselves
+      break;
+    }
+
+    case REQ_REMOVE: {
+      if (!parse_key()) {
+        return;
+      }
+      LOG("REMOVE request for key " + hex_key);
+      auto client_ptr = client.shared_from_this();
+      _storage_client.remove(hex_key, [this, client_ptr](StorageResponse&& response) {
+        if (client_ptr->disconnected) {
+          return;
+        }
+        send_simple_response(*client_ptr, "REMOVE", response);
       });
       break;
     }
 
-    case REQ_REMOVE:
-      LOG("REMOVE request for key " + hex_key);
-      _storage_client.remove(hex_key, [&](StorageResponse&& response) {
-        send_simple_response(client, "REMOVE", response);
-      });
-      break;
+    case REQ_STOP:
+      LOG("STOP request received");
+      send_response(client, std::vector<uint8_t>{STATUS_OK});
+      stop();
+      return;
+
+    default:
+      LOG("Unknown request type: " + std::to_string(request_type));
+      stop();
+      return;
     }
 
     buf.erase(buf.begin(), buf.begin() + offset);
@@ -303,13 +391,28 @@ void IpcServer::send_simple_response(ClientConnection& client,
     uint8_t msg_len = std::min(response.error.size(), MAX_MSG_LEN);
     err_resp.push_back(msg_len);
     err_resp.insert(err_resp.end(), response.error.begin(), response.error.begin() + msg_len);
-    send_response(client, err_resp);
+    send_response(client, std::move(err_resp));
     break;
+  }
+}
+
+void IpcServer::close_client(ClientConnection& client)
+{
+  client.disconnected = true;
+
+  auto* handle = reinterpret_cast<uv_handle_t*>(&client.handle);
+  if (!uv_is_closing(handle)) {
+    uv_close(handle, on_close);
   }
 }
 
 void IpcServer::flush_write_queue(ClientConnection& client)
 {
+  if (client.disconnected || uv_is_closing(reinterpret_cast<uv_handle_t*>(&client.handle))) {
+    client.write_queue.clear();
+    return;
+  }
+
   if (client.writing || client.write_queue.empty()) {
     return;
   }
@@ -351,5 +454,8 @@ void IpcServer::on_write_complete(uv_write_t* req, int status)
 void IpcServer::on_close(uv_handle_t* handle)
 {
   LOG("Client disconnected");
-  delete static_cast<ClientConnection*>(handle->data);
+  auto* client = static_cast<ClientConnection*>(handle->data);
+  // Remove from _clients map; shared_ptr prevent premature deletion
+  // if callbacks are still pending
+  client->server->_clients.erase(reinterpret_cast<uv_pipe_t*>(handle));
 }

@@ -33,10 +33,18 @@ using StorageCallback = std::function<void(StorageResponse&&)>;
 
 enum class RedisOperation { GET, SET, DEL, EXISTS };
 
+struct DataSlice
+{
+  std::vector<uint8_t> storage;
+  size_t offset = 0;
+  size_t size = 0;
+};
+
 struct RedisCommand
 {
   RedisOperation operation;
   std::string url;
+  DataSlice request_data; // For SET
   long long response_int;
   std::string response_str;
   StorageCallback callback;
@@ -63,15 +71,14 @@ public:
 
   void connect();
 
+  void exists(const std::string& hex_key, StorageCallback&& callback);
   void get(const std::string& hex_key, StorageCallback&& callback);
-  void put(const std::string& hex_key,
-           std::vector<uint8_t>&& data,
-           bool overwrite,
-           StorageCallback&& callback);
+  void
+  put(const std::string& hex_key, DataSlice&& data, bool overwrite, StorageCallback&& callback);
   void remove(const std::string& hex_key, StorageCallback&& callback);
 
 private:
-  void do_put(const std::string& hex_key, std::vector<uint8_t>&& data, StorageCallback&& callback);
+  void do_put(const std::string& hex_key, DataSlice&& data, StorageCallback&& callback);
   void command_completed(RedisCommandContext* context);
 
   uv_work_t* create_command_context(RedisCommand* command, const char* format, ...);

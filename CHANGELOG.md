@@ -1,5 +1,53 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [0.8] - 2026-05-18
+
+### Added
+
+- Support for info operation.
+- Support for exists operation.
+
+### Removed
+
+- Support for experimental CRSH greeting message format 2.
+
+## [0.7] - 2026-05-10
+
+### Added
+
+- Basic integration test suite.
+
+### Changed
+
+- Improve connection pool size.
+- Avoid an extra copy of PUT payloads.
+- Preallocate response buffer for GET requests.
+- Increase uv_listen backlog to 4096.
+
+## [0.6] - 2026-04-22
+
+### Added
+
+- Support for [netrc] authentication.
+- Logging of attributes.
+- Support for CRSH greeting message format 2.
+- Sending of config errors/warnings to ccache.
+
+[netrc]: https://everything.curl.dev/usingcurl/netrc.html
+
+### Changed
+
+- Improve logging of attribute parse errors.
+
+### Fixed
+
+- Installation of ccache-storage-https.exe on Windows.
+- Use-after-free in IPC client connection lifetime management.
+
 ## [0.5] - 2026-03-18
 
 ### Added

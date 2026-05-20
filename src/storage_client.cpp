@@ -6,8 +6,11 @@
 #include "logger.hpp"
 #include "version.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <limits>
 #include <sstream>
+#include <thread>
 
 namespace {
 
@@ -102,6 +105,24 @@ void StorageClient::connect_callback(const redisAsyncContext*, int status)
   }
 }
 
+void StorageClient::exists(const std::string& hex_key, StorageCallback&& callback)
+{
+  auto command = std::make_unique<RedisCommand>();
+  command->operation = RedisOperation::EXISTS;
+  command->url = build_url(_config, hex_key);
+  command->callback = std::move(callback);
+
+  LOG("EXISTS " + command->url);
+
+  uv_work_t* handle = create_command_context(command.get(), "EXISTS %s", command->url.c_str());
+  if (!handle) {
+    command->callback(StorageResponse{StorageResult::ERROR, "Failed to create redis command", {}});
+    return;
+  }
+
+  _active_commands[handle] = std::move(command);
+}
+
 void StorageClient::get(const std::string& hex_key, StorageCallback&& callback)
 {
   auto command = std::make_unique<RedisCommand>();
@@ -121,11 +142,11 @@ void StorageClient::get(const std::string& hex_key, StorageCallback&& callback)
 }
 
 void StorageClient::put(const std::string& hex_key,
-                        std::vector<uint8_t>&& data,
+                        DataSlice&& data,
                         bool overwrite,
                         StorageCallback&& callback)
 {
-  LOG("SET " + hex_key + " (" + std::to_string(data.size())
+  LOG("SET" + hex_key + " (" + std::to_string(data.size)
       + " bytes, overwrite=" + (overwrite ? "true" : "false") + ")");
 
   if (overwrite) {
@@ -159,18 +180,16 @@ void StorageClient::put(const std::string& hex_key,
   }
 }
 
-void StorageClient::do_put(const std::string& hex_key,
-                           std::vector<uint8_t>&& data,
-                           StorageCallback&& callback)
+void StorageClient::do_put(const std::string& hex_key, DataSlice&& data, StorageCallback&& callback)
 {
   auto command = std::make_unique<RedisCommand>();
   command->operation = RedisOperation::SET;
   command->url = build_url(_config, hex_key);
-  auto request_data = std::move(data);
+  command->request_data = std::move(data);
   command->callback = std::move(callback);
 
   uv_work_t* handle = create_command_context(
-    command.get(), "SET %s %b", command->url.c_str(), request_data.data(), request_data.size());
+    command.get(), "SET %s %b", command->url.c_str(), data.storage.data(), data.storage.size());
   if (!handle) {
     command->callback(StorageResponse{StorageResult::ERROR, "Failed to create redis command", {}});
     return;

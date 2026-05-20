@@ -34,6 +34,7 @@ std::optional<Config> parse_config()
 #else
   config.ipc_endpoint = ipc_endpoint;
 #endif
+  LOG("IPC endpoint: " + config.ipc_endpoint);
 
   const char* url = std::getenv("CRSH_URL");
   if (!url || url[0] == '\0') {
@@ -83,6 +84,7 @@ std::optional<Config> parse_config()
   config.port = port;
   config.path = path;
   config.prefix = "ccache";
+  LOG("URL: " + config.url);
 
   const char* idle_timeout = std::getenv("CRSH_IDLE_TIMEOUT");
   if (!idle_timeout || idle_timeout[0] == '\0') {
@@ -94,6 +96,7 @@ std::optional<Config> parse_config()
     return std::nullopt;
   }
   config.idle_timeout_seconds = *idle_val;
+  LOG("Idle timeout: " + std::to_string(config.idle_timeout_seconds));
 
   const char* num_attr_str = std::getenv("CRSH_NUM_ATTR");
   if (!num_attr_str || num_attr_str[0] == '\0') {
@@ -124,9 +127,22 @@ std::optional<Config> parse_config()
     std::string key_str(key);
     std::string value_str(value);
 
+    LOG("Attribute: " + key_str + "=" + value_str);
+
     if (key_str == "bearer-token") {
       config.bearer_token = value_str;
+    } else if (key_str == "use-netrc") {
+      config.use_netrc = (value_str == "true");
+    } else if (key_str == "netrc-file") {
+      config.use_netrc = true;
+      config.netrc_file = value_str;
+    } else {
+      config.diagnostics.push_back("warning: unknown attribute: " + key_str);
     }
+  }
+
+  for (const auto& diag : config.diagnostics) {
+    LOG(diag);
   }
 
   return config;
