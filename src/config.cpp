@@ -34,6 +34,7 @@ std::optional<Config> parse_config()
 #else
   config.ipc_endpoint = ipc_endpoint;
 #endif
+  LOG("IPC endpoint: " + config.ipc_endpoint);
 
   const char* url = std::getenv("CRSH_URL");
   if (!url || url[0] == '\0') {
@@ -41,6 +42,7 @@ std::optional<Config> parse_config()
     return std::nullopt;
   }
   config.url = url;
+  LOG("URL: " + config.url);
 
   const char* idle_timeout = std::getenv("CRSH_IDLE_TIMEOUT");
   if (!idle_timeout || idle_timeout[0] == '\0') {
@@ -52,6 +54,20 @@ std::optional<Config> parse_config()
     return std::nullopt;
   }
   config.idle_timeout_seconds = *idle_val;
+  LOG("Idle timeout: " + std::to_string(config.idle_timeout_seconds));
+
+  const char* format_max_str = std::getenv("CRSH_FORMAT_MAX");
+  if (!format_max_str || format_max_str[0] == '\0') {
+    config.format_max = 1;
+  } else {
+    auto format_max_val = parse_int<uint8_t>(format_max_str);
+    if (!format_max_val || *format_max_val == 0) {
+      LOG("CRSH_FORMAT_MAX must be between 1 and 255");
+      return std::nullopt;
+    }
+    config.format_max = *format_max_val;
+  }
+  LOG("Format max: " + std::to_string(config.format_max));
 
   const char* num_attr_str = std::getenv("CRSH_NUM_ATTR");
   if (!num_attr_str || num_attr_str[0] == '\0') {
@@ -82,9 +98,22 @@ std::optional<Config> parse_config()
     std::string key_str(key);
     std::string value_str(value);
 
+    LOG("Attribute: " + key_str + "=" + value_str);
+
     if (key_str == "bearer-token") {
       config.bearer_token = value_str;
+    } else if (key_str == "use-netrc") {
+      config.use_netrc = (value_str == "true");
+    } else if (key_str == "netrc-file") {
+      config.use_netrc = true;
+      config.netrc_file = value_str;
+    } else {
+      config.diagnostics.push_back("warning: unknown attribute: " + key_str);
     }
+  }
+
+  for (const auto& diag : config.diagnostics) {
+    LOG(diag);
   }
 
   return config;

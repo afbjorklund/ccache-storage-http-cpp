@@ -1,9 +1,14 @@
+file(READ "${CMAKE_SOURCE_DIR}/version.txt" PROJECT_VERSION_RAW)
+string(STRIP "${PROJECT_VERSION_RAW}" PROJECT_VERSION)
+
 cmake_minimum_required(VERSION 3.16)
-project(ccache-storage-http-cpp VERSION 0.5 LANGUAGES CXX)
+project(ccache-storage-http-cpp VERSION "${PROJECT_VERSION}" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CCACHE_STORAGE_HTTPS_EXE "ccache-storage-https${CMAKE_EXECUTABLE_SUFFIX}")
 
 find_package(CURL QUIET CONFIG)
 if(NOT CURL_FOUND)
@@ -57,7 +62,11 @@ else()
 endif()
 
 install(TARGETS ccache-storage-http RUNTIME DESTINATION bin)
-install(CODE "execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink ccache-storage-http \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/ccache-storage-https)")
+if(WIN32)
+  install(PROGRAMS $<TARGET_FILE:ccache-storage-http> DESTINATION bin RENAME ${CCACHE_STORAGE_HTTPS_EXE})
+else()
+  install(CODE "execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink ccache-storage-http \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/${CCACHE_STORAGE_HTTPS_EXE})")
+endif()
 
 find_program(CLANG_FORMAT clang-format)
 if(CLANG_FORMAT)

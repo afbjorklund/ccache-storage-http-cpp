@@ -11,17 +11,19 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class IpcServer;
 
-struct ClientConnection
+struct ClientConnection : public std::enable_shared_from_this<ClientConnection>
 {
   uv_pipe_t handle;
   IpcServer* server;
   std::vector<uint8_t> read_buf;
   std::vector<char> alloc_buf; // Reusable buffer for libuv reads
   bool writing = false;
+  bool disconnected = false; // Set when client disconnects, prevents sending to closed pipe
   std::vector<std::vector<uint8_t>> write_queue;
 };
 
@@ -36,6 +38,9 @@ public:
 
   template<typename T> void send_response(ClientConnection& client, T&& data)
   {
+    if (client.disconnected || uv_is_closing(reinterpret_cast<uv_handle_t*>(&client.handle))) {
+      return;
+    }
     client.write_queue.push_back(std::forward<T>(data));
     flush_write_queue(client);
   }
@@ -44,6 +49,7 @@ private:
   static void on_new_connection(uv_stream_t* server, int status);
   static void on_client_read(uv_stream_t* client, ssize_t nread, const uv_buf_t* buf);
   static void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf);
+  static void close_client(ClientConnection& client);
   static void on_write_complete(uv_write_t* req, int status);
   static void on_close(uv_handle_t* handle);
   static void on_idle_timeout(uv_timer_t* handle);
@@ -59,4 +65,5 @@ private:
   StorageClient& _storage_client;
   uv_pipe_t _server_pipe;
   uv_timer_t _idle_timer;
+  std::unordered_map<uv_pipe_t*, std::shared_ptr<ClientConnection>> _clients;
 };

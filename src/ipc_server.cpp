@@ -4,6 +4,7 @@
 #include "ipc_server.hpp"
 
 #include "logger.hpp"
+#include "version.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -17,7 +18,8 @@
 
 namespace {
 
-constexpr uint8_t PROTOCOL_VERSION = 0x01;
+constexpr uint8_t GREETING_FORMAT_MIN = 0x01;
+constexpr uint8_t GREETING_FORMAT_MAX_SUPPORTED = 0x02;
 constexpr uint8_t CAP_GET_PUT_REMOVE_STOP = 0x00;
 
 constexpr uint8_t STATUS_OK = 0x00;
@@ -139,7 +141,7 @@ void IpcServer::on_new_connection(uv_stream_t* server_stream, int status)
   IpcServer* server = static_cast<IpcServer*>(server_stream->data);
   server->reset_idle_timer();
 
-  auto client = std::make_unique<ClientConnection>();
+  auto client = std::make_shared<ClientConnection>();
   client->server = server;
 
   int r = uv_pipe_init(&server->_loop, &client->handle, 0);
@@ -149,27 +151,55 @@ void IpcServer::on_new_connection(uv_stream_t* server_stream, int status)
   }
   client->handle.data = client.get();
 
+  // Track client before any uv_close call so on_close always finds a valid shared_ptr
+  server->_clients[&client->handle] = client;
+
   r = uv_accept(server_stream, reinterpret_cast<uv_stream_t*>(&client->handle));
   if (r != 0) {
     LOG("Failed to accept connection: " + std::string(uv_strerror(r)));
-    uv_close(reinterpret_cast<uv_handle_t*>(&client->handle), on_close);
-    client.release(); // Will be deleted in on_close
+    close_client(*client);
     return;
   }
 
   LOG("Client connected");
 
-  // Send greeting: version(u8) + num_capabilities(u8) + capabilities...
-  std::vector<uint8_t> greeting = {PROTOCOL_VERSION, 1, CAP_GET_PUT_REMOVE_STOP};
+  // Determine greeting format: use the highest format supported by both sides.
+  uint8_t client_max = server->_config.format_max;
+  if (client_max < GREETING_FORMAT_MIN) {
+    LOG("Client CRSH_FORMAT_MAX (" + std::to_string(client_max)
+        + ") is below server minimum, closing connection");
+    close_client(*client);
+    return;
+  }
+  uint8_t format = std::min(GREETING_FORMAT_MAX_SUPPORTED, client_max);
+
+  std::vector<uint8_t> greeting;
+  greeting.push_back(format);
+  greeting.push_back(1); // num capabilities
+  greeting.push_back(CAP_GET_PUT_REMOVE_STOP);
+
+  if (format >= 2) {
+    std::string identity = std::string("ccache-storage-http-cpp ") + PROJECT_VERSION;
+    uint8_t id_len = static_cast<uint8_t>(std::min(identity.size(), MAX_MSG_LEN));
+    greeting.push_back(id_len);
+    greeting.insert(greeting.end(), identity.begin(), identity.begin() + id_len);
+    const auto& diags = server->_config.diagnostics;
+    uint8_t diag_num = static_cast<uint8_t>(std::min(diags.size(), size_t{255}));
+    greeting.push_back(diag_num);
+    for (uint8_t i = 0; i < diag_num; ++i) {
+      uint8_t msg_len = static_cast<uint8_t>(std::min(diags[i].size(), MAX_MSG_LEN));
+      greeting.push_back(msg_len);
+      greeting.insert(greeting.end(), diags[i].begin(), diags[i].begin() + msg_len);
+    }
+  }
+
   server->send_response(*client, std::move(greeting));
 
   r = uv_read_start(reinterpret_cast<uv_stream_t*>(&client->handle), alloc_buffer, on_client_read);
   if (r != 0) {
     LOG("Failed to start reading: " + std::string(uv_strerror(r)));
-    uv_close(reinterpret_cast<uv_handle_t*>(&client->handle), on_close);
+    close_client(*client);
   }
-
-  client.release(); // Ownership transferred to libuv callbacks
 }
 
 void IpcServer::alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf)
@@ -192,7 +222,7 @@ void IpcServer::on_client_read(uv_stream_t* stream, ssize_t nread, const uv_buf_
     if (nread != UV_EOF) {
       LOG("Read error: " + std::string(uv_strerror(static_cast<int>(nread))));
     }
-    uv_close(reinterpret_cast<uv_handle_t*>(stream), on_close);
+    close_client(*static_cast<ClientConnection*>(stream->data));
   }
 }
 
@@ -231,21 +261,26 @@ void IpcServer::process_client_data(ClientConnection& client)
     offset += key_len;
 
     switch (request_type) {
-    case REQ_GET:
+    case REQ_GET: {
       LOG("GET request for key " + hex_key);
-      _storage_client.get(hex_key, [&](StorageResponse&& response) {
+      auto client_ptr = client.shared_from_this();
+      _storage_client.get(hex_key, [this, client_ptr](StorageResponse&& response) {
+        if (client_ptr->disconnected) {
+          return;
+        }
         if (response.result == StorageResult::OK) {
           std::vector<uint8_t> header;
           header.reserve(9);
           header.push_back(STATUS_OK);
           write_u64_host_byte_order(header, response.data.size());
-          send_response(client, std::move(header));
-          send_response(client, std::move(response.data));
+          send_response(*client_ptr, std::move(header));
+          send_response(*client_ptr, std::move(response.data));
         } else {
-          send_simple_response(client, "GET", response);
+          send_simple_response(*client_ptr, "GET", response);
         }
       });
       break;
+    }
 
     case REQ_PUT: {
       if (len < offset + 1) {
@@ -267,18 +302,28 @@ void IpcServer::process_client_data(ClientConnection& client)
       bool overwrite = (flags & PUT_FLAG_OVERWRITE) != 0;
       LOG("PUT request for key " + hex_key + " (" + std::to_string(value.size()) + " bytes)");
 
-      _storage_client.put(hex_key, std::move(value), overwrite, [&](StorageResponse&& response) {
-        send_simple_response(client, "PUT", response);
-      });
+      auto client_ptr = client.shared_from_this();
+      _storage_client.put(
+        hex_key, std::move(value), overwrite, [this, client_ptr](StorageResponse&& response) {
+          if (client_ptr->disconnected) {
+            return;
+          }
+          send_simple_response(*client_ptr, "PUT", response);
+        });
       break;
     }
 
-    case REQ_REMOVE:
+    case REQ_REMOVE: {
       LOG("REMOVE request for key " + hex_key);
-      _storage_client.remove(hex_key, [&](StorageResponse&& response) {
-        send_simple_response(client, "REMOVE", response);
+      auto client_ptr = client.shared_from_this();
+      _storage_client.remove(hex_key, [this, client_ptr](StorageResponse&& response) {
+        if (client_ptr->disconnected) {
+          return;
+        }
+        send_simple_response(*client_ptr, "REMOVE", response);
       });
       break;
+    }
     }
 
     buf.erase(buf.begin(), buf.begin() + offset);
@@ -308,8 +353,23 @@ void IpcServer::send_simple_response(ClientConnection& client,
   }
 }
 
+void IpcServer::close_client(ClientConnection& client)
+{
+  client.disconnected = true;
+
+  auto* handle = reinterpret_cast<uv_handle_t*>(&client.handle);
+  if (!uv_is_closing(handle)) {
+    uv_close(handle, on_close);
+  }
+}
+
 void IpcServer::flush_write_queue(ClientConnection& client)
 {
+  if (client.disconnected || uv_is_closing(reinterpret_cast<uv_handle_t*>(&client.handle))) {
+    client.write_queue.clear();
+    return;
+  }
+
   if (client.writing || client.write_queue.empty()) {
     return;
   }
@@ -351,5 +411,8 @@ void IpcServer::on_write_complete(uv_write_t* req, int status)
 void IpcServer::on_close(uv_handle_t* handle)
 {
   LOG("Client disconnected");
-  delete static_cast<ClientConnection*>(handle->data);
+  auto* client = static_cast<ClientConnection*>(handle->data);
+  // Remove from _clients map; shared_ptr prevent premature deletion
+  // if callbacks are still pending
+  client->server->_clients.erase(reinterpret_cast<uv_pipe_t*>(handle));
 }

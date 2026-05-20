@@ -91,11 +91,20 @@ See also the [HTTP storage wiki page] for tips on how to set up a storage server
 The helper supports the following custom attributes:
 
 - `@bearer-token`: Bearer token for `Authorization` header
+- `@use-netrc`: Enable [netrc](https://everything.curl.dev/usingcurl/netrc.html) authentication
+- `@netrc-file`: Path to custom [netrc](https://everything.curl.dev/usingcurl/netrc.html) file (implies `@use-netrc`)
 
-Example:
+Examples:
 
 ```bash
+# Custom header
 export CCACHE_REMOTE_STORAGE="https://cache.example.com @header=Content-Type=application/octet-stream"
+
+# Netrc authentication
+export CCACHE_REMOTE_STORAGE="https://cache.example.com @use-netrc"
+
+# Custom netrc file
+export CCACHE_REMOTE_STORAGE="https://cache.example.com @netrc-file=/path/to/my-netrc"
 ```
 
 ## Optional debug logging

@@ -18,9 +18,14 @@ struct Config
   std::string ipc_endpoint;
   std::string url;
   unsigned int idle_timeout_seconds = 0;
+  uint8_t format_max = 1;
+
+  std::vector<std::string> diagnostics;
 
   // Attributes from CRSH_ATTR_*
   std::optional<std::string> bearer_token;
+  bool use_netrc = false;
+  std::optional<std::string> netrc_file;
 };
 
 std::optional<Config> parse_config();

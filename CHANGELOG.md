@@ -1,5 +1,28 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [0.6] - 2026-04-22
+
+### Added
+
+- Support for [netrc](https://everything.curl.dev/usingcurl/netrc.html)
+  authentication.
+- Logging of attributes.
+- Support for CRSH greeting message format 2.
+- Sending of config errors/warnings to ccache.
+
+### Changed
+
+- Improve logging of attribute parse errors.
+
+### Fixed
+
+- Installation of ccache-storage-https.exe on Windows.
+- Use-after-free in IPC client connection lifetime management.
+
 ## [0.5] - 2026-03-18
 
 ### Added
