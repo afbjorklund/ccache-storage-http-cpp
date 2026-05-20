@@ -18,9 +18,10 @@
 
 namespace {
 
-constexpr uint8_t GREETING_FORMAT_MIN = 0x01;
-constexpr uint8_t GREETING_FORMAT_MAX_SUPPORTED = 0x02;
-constexpr uint8_t CAP_GET_PUT_REMOVE_STOP = 0x00;
+constexpr uint8_t PROTOCOL_VERSION = 0x01;
+constexpr uint8_t CAP_GET_PUT_REMOVE = 0x00;
+constexpr uint8_t CAP_INFO = 0x01;
+constexpr uint8_t CAP_EXISTS = 0x02;
 
 constexpr uint8_t STATUS_OK = 0x00;
 constexpr uint8_t STATUS_NOOP = 0x01;
@@ -30,6 +31,8 @@ constexpr uint8_t REQ_GET = 0x00;
 constexpr uint8_t REQ_PUT = 0x01;
 constexpr uint8_t REQ_REMOVE = 0x02;
 constexpr uint8_t REQ_STOP = 0x03;
+constexpr uint8_t REQ_INFO = 0x04;
+constexpr uint8_t REQ_EXISTS = 0x05;
 
 constexpr uint8_t PUT_FLAG_OVERWRITE = 0x01;
 constexpr size_t MAX_MSG_LEN = 255;
@@ -163,36 +166,8 @@ void IpcServer::on_new_connection(uv_stream_t* server_stream, int status)
 
   LOG("Client connected");
 
-  // Determine greeting format: use the highest format supported by both sides.
-  uint8_t client_max = server->_config.format_max;
-  if (client_max < GREETING_FORMAT_MIN) {
-    LOG("Client CRSH_FORMAT_MAX (" + std::to_string(client_max)
-        + ") is below server minimum, closing connection");
-    close_client(*client);
-    return;
-  }
-  uint8_t format = std::min(GREETING_FORMAT_MAX_SUPPORTED, client_max);
-
-  std::vector<uint8_t> greeting;
-  greeting.push_back(format);
-  greeting.push_back(1); // num capabilities
-  greeting.push_back(CAP_GET_PUT_REMOVE_STOP);
-
-  if (format >= 2) {
-    std::string identity = std::string("ccache-storage-http-cpp ") + PROJECT_VERSION;
-    uint8_t id_len = static_cast<uint8_t>(std::min(identity.size(), MAX_MSG_LEN));
-    greeting.push_back(id_len);
-    greeting.insert(greeting.end(), identity.begin(), identity.begin() + id_len);
-    const auto& diags = server->_config.diagnostics;
-    uint8_t diag_num = static_cast<uint8_t>(std::min(diags.size(), size_t{255}));
-    greeting.push_back(diag_num);
-    for (uint8_t i = 0; i < diag_num; ++i) {
-      uint8_t msg_len = static_cast<uint8_t>(std::min(diags[i].size(), MAX_MSG_LEN));
-      greeting.push_back(msg_len);
-      greeting.insert(greeting.end(), diags[i].begin(), diags[i].begin() + msg_len);
-    }
-  }
-
+  // Send greeting: version(u8) + num_capabilities(u8) + capabilities...
+  std::vector<uint8_t> greeting = {PROTOCOL_VERSION, 3, CAP_GET_PUT_REMOVE, CAP_INFO, CAP_EXISTS};
   server->send_response(*client, std::move(greeting));
 
   r = uv_read_start(reinterpret_cast<uv_stream_t*>(&client->handle), alloc_buffer, on_client_read);
@@ -235,33 +210,72 @@ void IpcServer::process_client_data(ClientConnection& client)
     size_t len = buf.size();
     uint8_t request_type = data[0];
     size_t offset = 1;
+    std::string hex_key;
 
-    if (request_type == REQ_STOP) {
-      buf.erase(buf.begin(), buf.begin() + offset);
-      LOG("STOP request received");
-      send_response(client, std::vector<uint8_t>{STATUS_OK});
-      stop();
-      return;
-    }
-
-    if (request_type != REQ_GET && request_type != REQ_PUT && request_type != REQ_REMOVE) {
-      LOG("Unknown request type: " + std::to_string(request_type));
-      stop();
-      return;
-    }
-
-    if (len < offset + 1) {
-      return; // incomplete message
-    }
-    uint8_t key_len = data[offset++];
-    if (len < offset + key_len) {
-      return; // incomplete message
-    }
-    std::string hex_key = format_hex(data + offset, key_len);
-    offset += key_len;
+    auto parse_key = [&] {
+      if (len < offset + 1) {
+        return false; // incomplete message
+      }
+      uint8_t key_len = data[offset++];
+      if (len < offset + key_len) {
+        return false; // incomplete message
+      }
+      hex_key = format_hex(data + offset, key_len);
+      offset += key_len;
+      return true;
+    };
 
     switch (request_type) {
+    case REQ_EXISTS: {
+      if (!parse_key()) {
+        return;
+      }
+      LOG("EXISTS request for key " + hex_key);
+      auto client_ptr = client.shared_from_this();
+      _storage_client.exists(hex_key, [this, client_ptr](StorageResponse&& response) {
+        if (client_ptr->disconnected) {
+          return;
+        }
+        if (response.result == StorageResult::ERROR) {
+          LOG("EXISTS failed: " + response.error);
+          std::vector<uint8_t> err_resp;
+          err_resp.push_back(STATUS_ERR);
+          uint8_t msg_len = static_cast<uint8_t>(std::min(response.error.size(), MAX_MSG_LEN));
+          err_resp.push_back(msg_len);
+          err_resp.insert(err_resp.end(), response.error.begin(), response.error.begin() + msg_len);
+          send_response(*client_ptr, std::move(err_resp));
+        } else {
+          uint8_t exists = (response.result == StorageResult::OK) ? 0x01 : 0x00;
+          send_response(*client_ptr, std::vector<uint8_t>{STATUS_OK, exists});
+        }
+      });
+      break;
+    }
+
+    case REQ_INFO: {
+      LOG("INFO request");
+      std::vector<uint8_t> response;
+      std::string identity = std::string("ccache-storage-http-cpp ") + PROJECT_VERSION;
+      uint8_t id_len = static_cast<uint8_t>(std::min(identity.size(), MAX_MSG_LEN));
+      response.push_back(id_len);
+      response.insert(response.end(), identity.begin(), identity.begin() + id_len);
+      const auto& diags = _config.diagnostics;
+      uint8_t diag_num = static_cast<uint8_t>(std::min(diags.size(), size_t{255}));
+      response.push_back(diag_num);
+      for (uint8_t i = 0; i < diag_num; ++i) {
+        uint8_t msg_len = static_cast<uint8_t>(std::min(diags[i].size(), MAX_MSG_LEN));
+        response.push_back(msg_len);
+        response.insert(response.end(), diags[i].begin(), diags[i].begin() + msg_len);
+      }
+
+      send_response(*client.shared_from_this(), std::move(response));
+      break;
+    }
+
     case REQ_GET: {
+      if (!parse_key()) {
+        return;
+      }
       LOG("GET request for key " + hex_key);
       auto client_ptr = client.shared_from_this();
       _storage_client.get(hex_key, [this, client_ptr](StorageResponse&& response) {
@@ -283,6 +297,9 @@ void IpcServer::process_client_data(ClientConnection& client)
     }
 
     case REQ_PUT: {
+      if (!parse_key()) {
+        return;
+      }
       if (len < offset + 1) {
         return; // incomplete message
       }
@@ -326,6 +343,9 @@ void IpcServer::process_client_data(ClientConnection& client)
     }
 
     case REQ_REMOVE: {
+      if (!parse_key()) {
+        return;
+      }
       LOG("REMOVE request for key " + hex_key);
       auto client_ptr = client.shared_from_this();
       _storage_client.remove(hex_key, [this, client_ptr](StorageResponse&& response) {
@@ -336,6 +356,17 @@ void IpcServer::process_client_data(ClientConnection& client)
       });
       break;
     }
+
+    case REQ_STOP:
+      LOG("STOP request received");
+      send_response(client, std::vector<uint8_t>{STATUS_OK});
+      stop();
+      return;
+
+    default:
+      LOG("Unknown request type: " + std::to_string(request_type));
+      stop();
+      return;
     }
 
     buf.erase(buf.begin(), buf.begin() + offset);
